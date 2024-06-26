@@ -21,7 +21,7 @@ model = LogisticRegression(
 utils.set_initial_params(model)
 
 class MnistClient(fl.client.NumPyClient):
-    def get_parameters(self):
+    def get_parameters(self, config):
         return utils.get_model_parameters(model)
     
     def fit(self, parameters, config):
@@ -39,4 +39,7 @@ class MnistClient(fl.client.NumPyClient):
         accuracy = model.score(X_test, y_test)
         return loss, len(X_test), {"accuracy": accuracy}
     
-fl.client.start_numpy_client("0.0.0.0:8080", client=MnistClient)
+fl.client.start_client(
+    server_address="localhost:8080", 
+    client=MnistClient().to_client()
+)
