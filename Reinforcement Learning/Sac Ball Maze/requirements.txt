@@ -1,0 +1,7 @@
+gymnasium==0.29.1
+gymnasium-robotics==1.2.4
+pybullet==3.2.6
+tensorboard==2.15.1
+torch
+torchvision
+torchaudio
