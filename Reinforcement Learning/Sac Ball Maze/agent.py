@@ -2,8 +2,11 @@ import os
 import torch
 import torch.nn.functional as F
 from torch.optim import Adam
+from torch.utils.tensorboard import SummaryWriter
+import datetime
 from model import *
 from buffer import ReplayBuffer
+from gym_robotics_custom import RoboGymObservationWrapper
 
 def hard_update(target, source):
     for target_param, param in zip(target.parameters(), source.parameters()):
@@ -14,13 +17,12 @@ def soft_update(target, source, tau):
         target_param.data.copy_(param.data * (1.0 - tau) + param.data * tau)
 
 class Agent(object):
-    def __init__(self, num_inputs, action_space, gamma, tau, alpha, policy, target_update_interval,
+    def __init__(self, num_inputs, action_space, gamma, tau, alpha, target_update_interval,
                  hidden_size, learning_rate, exploration_scaling_factor):
         self.gamma = gamma
         self.tau = tau
         self.alpha = alpha
 
-        self.policy_type = policy
         self.target_update_interval = target_update_interval
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Running on {self.device}")
@@ -42,9 +44,9 @@ class Agent(object):
         else:
             _, _, action = self.policy.sample(state)
 
-        return action.detach().cpu().numpy()[0]
+        return action.detach().cpu()[0]
 
-    def update_parameters(self, memory:ReplayBuffer, batch_size, updates):
+    def update_parameters(self, memory:ReplayBuffer, batch_size:int, updates):
         state_batch, action_batch, reward_batch, next_state_batch, mask_batch = memory.sample_buffer(batch_size=batch_size)
 
         state_batch = torch.FloatTensor(state_batch).to(self.device)
@@ -72,7 +74,7 @@ class Agent(object):
         qf_loss.backward()
         self.critic_optim.step()
 
-        pi, log_pi, _ = self.policy.sample(state_batch, pi)
+        pi, log_pi, _ = self.policy.sample(state_batch)
         qf1_pi, qf2_pi = self.critic(state_batch, pi)
         min_qf_pi = torch.min(qf1_pi, qf2_pi)
 
@@ -90,6 +92,61 @@ class Agent(object):
 
         return qf1_loss.item(), qf2_loss.item(), policy_loss.item(), alpha_loss.item(), alpha_tlogs.item()
 
+    def train(self, env:RoboGymObservationWrapper, env_name:str, memory:ReplayBuffer, episodes:int=1000, batch_size:int=64, updates_per_step:int=1, summary_writer_name:str='', max_episode_steps:int=100):
+        warmup = 20
+
+        # tensorboard
+        summary_writer_name = f"runs/{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')} " + summary_writer_name
+        writer = SummaryWriter(summary_writer_name)
+
+        # training loop
+        total_numsteps = 0
+        updates = 0
+
+        for i_episode in range(episodes):
+            episode_reward = 0
+            episode_steps = 0
+            done = False
+            state, _ = env.reset()
+
+            while not done and episode_steps < max_episode_steps:
+                if warmup > i_episode:
+                    action = env.action_space.sample()
+                else:
+                    action = self.select_action(state)
+
+                if memory.can_sample(batch_size=batch_size):
+                    for i in range(updates_per_step):
+                        critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha = self.update_parameters(
+                            memory,
+                            batch_size,
+                            updates
+                        )
+
+                        writer.add_scalar('loss/critic_1', critic_1_loss, updates)
+                        writer.add_scalar('loss/critic_2', critic_2_loss, updates)
+                        writer.add_scalar('loss/policy', policy_loss, updates)
+                        writer.add_scalar('loss/entropy', ent_loss, updates)
+                        writer.add_scalar('parameters/alpha', alpha, updates)
+                
+                next_state, reward, done, _, _ = env.step(action)
+                episode_steps += 1
+                total_numsteps += 1
+                episode_reward += reward
+
+                # ignore the "done" signal if it comes from hitting the time horizon
+                mask = 1 if episode_steps == max_episode_steps else float(not done)
+
+                memory.store_transition(state, action, reward, next_state, mask)
+                state = next_state
+
+            writer.add_scalar('reward/train', episode_reward, i_episode)
+            print(f"Episode: {i_episode}, total numsteps: {total_numsteps}, episode steps: {episode_steps}, reward: {round(episode_reward, 2)}")
+
+            if i_episode % 10 == 0:
+                self.save_checkpoint()
+                print("Saving Model")
+    
     def save_checkpoint(self):
         if not os.path.exists('checkpoints/'):
             os.makedirs('checkpoints/')
@@ -98,7 +155,7 @@ class Agent(object):
         self.critic_target.save_checkpoint()
         self.critic.save_checkpoint()
 
-    def load_checkpoint(self, evaluate=False):
+    def load_checkpoint(self, evaluate:bool=False):
         try:
             print('Loading models...')
             self.policy.load_checkpoint()

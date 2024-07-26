@@ -5,3 +5,4 @@ tensorboard==2.15.1
 torch
 torchvision
 torchaudio
+numpy==1.26.4
