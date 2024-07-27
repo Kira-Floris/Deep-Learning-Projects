@@ -2,7 +2,8 @@ gymnasium==0.29.1
 gymnasium-robotics==1.2.4
 pybullet==3.2.6
 tensorboard==2.15.1
+numpy==1.26.4
+--extra-index-url https://download.pytorch.org/whl/cu118
 torch
 torchvision
 torchaudio
-numpy==1.26.4
