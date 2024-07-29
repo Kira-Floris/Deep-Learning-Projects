@@ -36,6 +36,12 @@ class Agent(object):
         self.policy = Actor(num_inputs, action_space.shape[0], hidden_size, action_space).to(device=self.device)
         self.policy_optim = Adam(self.policy.parameters(), lr=learning_rate)
 
+        # initialize the predictive model
+        self.predictive_model = PredictiveModel(num_inputs, action_space.shape[0], hidden_size).to(device=self.device)
+        self.predictive_model_optim = Adam(self.predictive_model.parameters(), lr=learning_rate)
+
+        self.exploration_scaling_factor = exploration_scaling_factor
+
     def select_action(self, state, evaluate=False):
         state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
 
@@ -57,6 +63,17 @@ class Agent(object):
 
         # predictive model here
         # TODO: add a predictive model
+        predicted_next_state = self.predictive_model(state_batch, action_batch)
+
+        # calculate prediction loss
+        prediction_error = F.mse_loss(predicted_next_state, next_state_batch)
+        prediction_error_no_reduction = F.mse_loss(predicted_next_state, next_state_batch, reduce=False)
+
+        scaled_intrinsic_reward = prediction_error_no_reduction.mean(dim=1)
+        scaled_intrinsic_reward = self.exploration_scaling_factor * torch.reshape(scaled_intrinsic_reward, (batch_size, 1))
+
+        # augment the reward batch
+        reward_batch = reward_batch + scaled_intrinsic_reward
 
         with torch.no_grad():
             next_state_action, next_state_log_pi, _ = self.policy.sample(next_state_batch)
@@ -74,12 +91,18 @@ class Agent(object):
         qf_loss.backward()
         self.critic_optim.step()
 
+        # update the predictive network
+        self.predictive_model_optim.zero_grad()
+        prediction_error.backward()
+        self.predictive_model_optim.step()
+
         pi, log_pi, _ = self.policy.sample(state_batch)
         qf1_pi, qf2_pi = self.critic(state_batch, pi)
         min_qf_pi = torch.min(qf1_pi, qf2_pi)
 
         policy_loss = ((self.alpha * log_pi) - min_qf_pi).mean()
         
+        # update the policy network
         self.policy_optim.zero_grad()
         policy_loss.backward()
         self.policy_optim.step()
@@ -90,7 +113,7 @@ class Agent(object):
         if updates % self.target_update_interval == 0:
             soft_update(self.critic_target, self.critic, self.tau)
 
-        return qf1_loss.item(), qf2_loss.item(), policy_loss.item(), alpha_loss.item(), alpha_tlogs.item()
+        return qf1_loss.item(), qf2_loss.item(), policy_loss.item(), alpha_loss.item(), prediction_error.item(), alpha_tlogs.item()
 
     def train(self, env:RoboGymObservationWrapper, env_name:str, memory:ReplayBuffer, episodes:int=1000, batch_size:int=64, updates_per_step:int=1, summary_writer_name:str='', max_episode_steps:int=100):
         warmup = 20
@@ -117,7 +140,7 @@ class Agent(object):
 
                 if memory.can_sample(batch_size=batch_size):
                     for i in range(updates_per_step):
-                        critic_1_loss, critic_2_loss, policy_loss, ent_loss, alpha = self.update_parameters(
+                        critic_1_loss, critic_2_loss, policy_loss, ent_loss, prediction_loss, alpha = self.update_parameters(
                             memory,
                             batch_size,
                             updates
@@ -127,8 +150,9 @@ class Agent(object):
                         writer.add_scalar('loss/critic_2', critic_2_loss, updates)
                         writer.add_scalar('loss/policy', policy_loss, updates)
                         writer.add_scalar('loss/entropy', ent_loss, updates)
+                        writer.add_scalar('loss/prediction_loss', prediction_loss, updates)
                         writer.add_scalar('parameters/alpha', alpha, updates)
-
+                        
                         updates += 1
                 
                 next_state, reward, done, _, _ = env.step(action)

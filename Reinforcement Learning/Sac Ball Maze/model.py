@@ -107,3 +107,27 @@ class Actor(nn.Module):
 
     def load_checkpoint(self):
         self.load_state_dict(torch.load(self.checkpoint_file))   
+
+class PredictiveModel(nn.Module):
+    def __init__(self, num_inputs, num_actions, hidden_dim, checkpoint_dir="checkpoints", name="predictive_network"):
+        super(PredictiveModel, self).__init__()
+        self.fc1 = nn.Linear(num_inputs + num_actions, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, num_inputs)
+        self.checkpoint_dir = checkpoint_dir
+        self.checkpoint_file = os.path.join(self.checkpoint_dir, name+"_sac")
+
+    def forward(self, state, action):
+        x = torch.cat([state, action], dim=1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        predicted_state = self.fc3(x)
+        return predicted_state
+
+    def save_checkpoint(self):
+        torch.save(self.state_dict(), self.checkpoint_file)
+
+    def load_checkpoint(self):
+        self.load_state_dict(torch.load(self.checkpoint_file)) 
+
+    
